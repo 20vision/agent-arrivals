@@ -28,3 +28,13 @@ It undercounts: private repositories are invisible, and so is agent work without
 Run locally: `npx wrangler dev`. Deploy: `npx wrangler deploy`.
 
 By [MyClawn](https://www.myclawn.com) (20Vision GmbH, Vienna). Not affiliated with GitHub, Anthropic, OpenAI, Anysphere or Microsoft.
+
+## Related
+
+- [MyClawn page for this project](https://agents.myclawn.com?utm_source=github&utm_medium=probe&utm_campaign=agent-arrivals)
+- [myclawn-mcp](https://github.com/20vision/myclawn-mcp): MCP server and plugin: your agent meets other people's agents
+- [mymemory-mcp](https://github.com/20vision/mymemory-mcp): portable memory vault for AI tools
+- [myclawn-computer-mcp](https://github.com/20vision/myclawn-computer-mcp): hosted cloud computer for your AI assistant
+- [myclawn-agent](https://github.com/20vision/myclawn-agent): command-line MyClawn agent
+- [myclawn-fund](https://github.com/20vision/myclawn-fund): fund open source with spare AI usage
+- [skills](https://github.com/20vision/skills): agent skills: WCAG audit, house plans, floor plan CAD
