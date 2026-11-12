@@ -136,6 +136,7 @@
     while (rows.children.length > MAXROWS) rows.removeChild(rows.lastChild);
   }
   function poll() {
+    if (document.hidden) return;
     fetch('/api/tide').then(function (r) { return r.ok ? r.json() : null; }).then(function (t) {
       if (!t || !t.at) return;
       tide = t;
@@ -265,6 +266,7 @@
   // ------------------------------------------------------------ claiming a pass (GitHub sign-in with a code, public information only)
   var meLoaded = null;
   function loadMe() {
+    if (!meLoaded && document.cookie.indexOf('aa_u=1') < 0) meLoaded = Promise.resolve(null);
     if (!meLoaded) meLoaded = fetch('/api/me', { credentials: 'same-origin' }).then(function (r) { return r.ok ? r.json() : {}; }).then(function (m) { return m && m.login ? m.login : null; }).catch(function () { return null; });
     return meLoaded;
   }
@@ -400,7 +402,7 @@
     }).catch(function () { setTimeout(function () { verifyLoop(u, my, n + 1); }, 4000); });
   }
   function loadFlyers() {
-    fetch('/api/top').then(function (r) { return r.ok ? r.json() : null; }).then(function (d) {
+    (B.top ? Promise.resolve(B.top) : fetch('/api/top').then(function (r) { return r.ok ? r.json() : null; })).then(function (d) {
       var box = $('flyerbox');
       if (!box || !d) return;
       var top = d.top || [];
@@ -414,12 +416,12 @@
     }).catch(function () {});
   }
   function loadLounge() {
-    fetch('/api/lounge').then(function (r) { return r.ok ? r.json() : null; }).then(function (list) {
+    (B.lounge ? Promise.resolve(B.lounge) : fetch('/api/lounge').then(function (r) { return r.ok ? r.json() : null; })).then(function (list) {
       var box = $('loungebox');
       if (!box || !list) return;
       if (!list.length) { box.innerHTML = '<p class="fine">Empty so far. Claim your pass and say what you have and what you need: the first notes go up here.</p>'; return; }
       box.innerHTML = list.map(function (p) {
-        return '<div class="lcard"><a class="who2" href="/' + esc(p.login) + '"><img alt="" loading="lazy" width="28" height="28" src="https://github.com/' + encodeURIComponent(p.login) + '.png?size=56">@' + esc(p.login) + (p.total ? ' <span>' + tierOf(p.total) + '</span>' : '') + '</a>'
+        return '<div class="lcard"><a class="who2" href="/' + esc(p.login) + '"><img alt="" loading="lazy" width="28" height="28" src="https://github.com/' + encodeURIComponent(p.login) + '.png?size=56">@' + esc(p.login) + (same(p.login, '20vision') ? ' <span>runs this site</span>' : (p.total ? ' <span>' + tierOf(p.total) + '</span>' : '')) + '</a>'
           + (p.has ? '<div><small>Has</small><p>' + esc(p.has) + '</p></div>' : '')
           + (p.needs ? '<div><small>Needs</small><p>' + esc(p.needs) + '</p></div>' : '')
           + (p.handle ? '<p class="addr">agent: ' + esc(p.handle) + ' on MyClawn Contacts</p>' : '') + '</div>';
@@ -707,7 +709,7 @@
   // ------------------------------------------------------------ departures, network line, copy buttons
   function loadDepartures() {
     if (!$('deps')) return;
-    fetch('/api/departures').then(function (r) { return r.ok ? r.json() : []; }).then(function (list) {
+    (B.dep ? Promise.resolve(B.dep) : fetch('/api/departures').then(function (r) { return r.ok ? r.json() : []; })).then(function (list) {
       var box = $('deps');
       if (!list || !list.length) { box.innerHTML = '<p class="fine">The list did not load. It lives at <a href="https://fund.myclawn.com/?utm_source=agents&utm_medium=departures">fund.myclawn.com</a>.</p>'; return; }
       box.innerHTML = list.map(function (p) {
@@ -720,7 +722,7 @@
   }
   function loadNet() {
     if (!$('netline')) return;
-    fetch('/api/net').then(function (r) { return r.ok ? r.json() : null; }).then(function (s) {
+    (B.net ? Promise.resolve(B.net) : fetch('/api/net').then(function (r) { return r.ok ? r.json() : null; })).then(function (s) {
       if (!s || typeof s.agents !== 'number') return;
       $('netline').textContent = fmt(s.agents) + (s.agents === 1 ? ' agent has' : ' agents have') + ' an address so far. The network is new.';
     }).catch(function () {});
@@ -766,7 +768,7 @@
   loadNet();
   loadFlyers();
   loadLounge();
-  setInterval(poll, 60000);
+  setInterval(poll, 300000);
   if (B.kind === 'user' && B.a) runUser(B.a, false);
   else if (B.kind === 'repo' && B.a && B.b) runRepo(B.a, B.b, false);
 })();

@@ -112,6 +112,24 @@ async function getTide(env) {
   return tide;
 }
 
+let boardMemo = { at: 0, top: null, lounge: null };
+async function getBoards(env) {
+  const now = Date.now();
+  if (boardMemo.top && now - boardMemo.at < 30000) return boardMemo;
+  await init(env);
+  const rows = await env.DB.prepare('SELECT login, total, merged FROM passes WHERE listed = 1 AND verified_at IS NOT NULL AND total > 0 ORDER BY total DESC, claimed_at ASC LIMIT 50').all();
+  const c = await env.DB.prepare('SELECT COUNT(*) AS n FROM passes').first();
+  const l = await env.DB.prepare("SELECT login, total, has, needs, handle FROM passes WHERE listed = 1 AND (has != '' OR needs != '') ORDER BY card_at DESC LIMIT 60").all();
+  boardMemo = { at: now, top: { claimed: (c && c.n) || 0, top: rows.results || [] }, lounge: l.results || [] };
+  return boardMemo;
+}
+const shapeFund = (list) => (Array.isArray(list) ? list : []).slice(0, 12).map((p) => ({
+  slug: String(p.slug || ''), owner: String(p.owner || ''), repo: String(p.repo || ''), title: String(p.title || '').slice(0, 80), vision: String(p.vision || '').slice(0, 200),
+})).filter((p) => /^[a-z0-9-]+$/i.test(p.slug));
+const shapeNet = (x) => ({ agents: Number(x.agents_registered) || 0, cards: Number(x.cards_published) || 0, wallet: !!x.wallet_enabled });
+const getFund = () => cachedFetch(fundMemo, 'https://fund.myclawn.com/api/projects', 600000, shapeFund);
+const getNet = () => cachedFetch(netMemo, 'https://contacts.myclawn.com/api/net/public/stats', 300000, shapeNet);
+
 function publicPass(r) {
   if (!r) return null;
   let fam = [], langs = [];
@@ -280,7 +298,7 @@ async function verifyStep(env, job) {
         .bind(d.total || 0, d.merged || 0, d.abroad || 0, d.top || '', d.first || '', JSON.stringify(d.fam || []), JSON.stringify(d.langs || []), nowSec(), job.gh_id),
       env.DB.prepare('DELETE FROM jobs WHERE gh_id = ?1').bind(job.gh_id),
     ]);
-    memo.at = 0;
+    memo.at = 0; boardMemo.at = 0;
     return { done: true };
   }
   await env.DB.prepare('UPDATE jobs SET step = ?1, data = ?2 WHERE gh_id = ?3').bind(step, JSON.stringify(d), job.gh_id).run();
@@ -328,10 +346,10 @@ async function authRoutes(req, env, ctx, url, path) {
       env.DB.prepare("INSERT INTO jobs (gh_id, login, token, step, data, at) VALUES (?1, ?2, ?3, 0, '{}', ?4) ON CONFLICT(gh_id) DO UPDATE SET login = ?2, token = ?3, step = 0, data = '{}', at = ?4").bind(me.id, me.login, d.access_token, nowSec()),
     ]);
     memo.at = 0;
-    return new Response(JSON.stringify({ ok: true, login: me.login }), { headers: [['content-type', 'application/json; charset=utf-8'], ['set-cookie', await sessionCookie(env, me.id, me.login)], ['set-cookie', 'aa_d=; Path=/auth; Max-Age=0; HttpOnly; Secure; SameSite=Lax']] });
+    return new Response(JSON.stringify({ ok: true, login: me.login }), { headers: [['content-type', 'application/json; charset=utf-8'], ['set-cookie', await sessionCookie(env, me.id, me.login)], ['set-cookie', `aa_u=1; Path=/; Max-Age=${30 * 86400}; Secure; SameSite=Lax`], ['set-cookie', 'aa_d=; Path=/auth; Max-Age=0; HttpOnly; Secure; SameSite=Lax']] });
   }
 
-  if (path === '/auth/logout') return json({ ok: true }, 200, { 'set-cookie': 'aa_s=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax' });
+  if (path === '/auth/logout') return new Response(JSON.stringify({ ok: true }), { headers: [['content-type', 'application/json; charset=utf-8'], ['set-cookie', 'aa_s=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax'], ['set-cookie', 'aa_u=; Path=/; Max-Age=0; Secure; SameSite=Lax']] });
   return json({ error: 'not_found' }, 404);
 }
 
@@ -439,7 +457,7 @@ function cut(html, keep) {
   return html.replace(/<section\b[^>]*\bid="([a-z]+)"[\s\S]*?<\/section>\s*/g, (m, id) => (keep.includes(id) ? m : ''));
 }
 
-function render(kind, a, b, tide, pass) {
+function render(kind, a, b, tide, pass, extra) {
   const now = nowSec();
   const h = (tide && tide.h24) || {};
   const total = h.all_agents;
@@ -506,7 +524,7 @@ function render(kind, a, b, tide, pass) {
     sampleNote = `Most of this is people's own agents working in their own repositories. Of the latest ${x.n} pull requests on the board, ${q(x.owner)}% were opened by the repository's owner, ${q(x.team)}% by a member or collaborator, and ${q(x.outside)}% by someone outside the team.`;
   }
   const made = tide && tide.made && tide.made.recap >= 20 ? `${fmt(tide.made.recap)} recaps made so far.` : '';
-  const boot = JSON.stringify({ kind, a: a || null, b: b || null, tide: tide || null, pass: pass || null, now }).replace(/</g, '\\u003c').replace(/[\u2028\u2029]/g, '');
+  const boot = JSON.stringify({ kind, a: a || null, b: b || null, tide: tide || null, pass: pass || null, now, ...(extra || {}) }).replace(/</g, '\\u003c').replace(/[\u2028\u2029]/g, '');
   const map = {
     '{{TITLE}}': esc(title), '{{DESC}}': esc(desc), '{{ROBOTS}}': robots, '{{CANONICAL}}': esc(canonical),
     '{{BIGNUM}}': big ? fmt(big) : '000,000', '{{H1LABEL}}': esc(biglabel), '{{H1PRE}}': esc(h1pre), '{{BOARDLINE}}': esc(boardline),
@@ -561,16 +579,8 @@ export default {
         await env.DB.prepare('INSERT INTO counters (day, name, n) VALUES (?1, ?2, 1) ON CONFLICT(day, name) DO UPDATE SET n = n + 1').bind(day, k).run();
         return json({ ok: true });
       }
-      if (path === '/api/departures' && req.method === 'GET') {
-        const data = await cachedFetch(fundMemo, 'https://fund.myclawn.com/api/projects', 600000, (list) => (Array.isArray(list) ? list : []).slice(0, 12).map((p) => ({
-          slug: String(p.slug || ''), owner: String(p.owner || ''), repo: String(p.repo || ''), title: String(p.title || '').slice(0, 80), vision: String(p.vision || '').slice(0, 200),
-        })).filter((p) => /^[a-z0-9-]+$/i.test(p.slug)));
-        return json(data || [], 200, { 'cache-control': 'public, max-age=300' });
-      }
-      if (path === '/api/net' && req.method === 'GET') {
-        const data = await cachedFetch(netMemo, 'https://contacts.myclawn.com/api/net/public/stats', 300000, (s) => ({ agents: Number(s.agents_registered) || 0, cards: Number(s.cards_published) || 0, wallet: !!s.wallet_enabled }));
-        return json(data || {}, 200, { 'cache-control': 'public, max-age=300' });
-      }
+      if (path === '/api/departures' && req.method === 'GET') return json((await getFund()) || [], 200, { 'cache-control': 'public, max-age=300' });
+      if (path === '/api/net' && req.method === 'GET') return json((await getNet()) || {}, 200, { 'cache-control': 'public, max-age=300' });
       if (path === '/api/me' && req.method === 'GET') {
         const s = await session(req, env);
         return json(s ? { login: s.login } : {}, 200, { 'cache-control': 'no-store' });
@@ -579,17 +589,8 @@ export default {
         if (!LOGIN.test(seg[2])) return json({}, 404);
         return json((await getPass(env, seg[2])) || {}, 200, { 'cache-control': 'no-store' });
       }
-      if (path === '/api/top' && req.method === 'GET') {
-        await init(env);
-        const rows = await env.DB.prepare('SELECT login, total, merged FROM passes WHERE listed = 1 AND verified_at IS NOT NULL AND total > 0 ORDER BY total DESC, claimed_at ASC LIMIT 50').all();
-        const c = await env.DB.prepare('SELECT COUNT(*) AS n FROM passes').first();
-        return json({ claimed: (c && c.n) || 0, top: rows.results || [] }, 200, { 'cache-control': 'public, max-age=30' });
-      }
-      if (path === '/api/lounge' && req.method === 'GET') {
-        await init(env);
-        const rows = await env.DB.prepare("SELECT login, total, has, needs, handle FROM passes WHERE listed = 1 AND (has != '' OR needs != '') ORDER BY card_at DESC LIMIT 60").all();
-        return json(rows.results || [], 200, { 'cache-control': 'public, max-age=30' });
-      }
+      if (path === '/api/top' && req.method === 'GET') return json((await getBoards(env)).top, 200, { 'cache-control': 'public, max-age=30' });
+      if (path === '/api/lounge' && req.method === 'GET') return json((await getBoards(env)).lounge, 200, { 'cache-control': 'public, max-age=30' });
       if (path === '/api/card' && req.method === 'POST') {
         if (!sameOrigin(req, url)) return json({ error: 'origin' }, 403);
         const s = await session(req, env);
@@ -602,7 +603,7 @@ export default {
         if (handle && !HANDLE.test(handle)) return json({ error: 'handle' }, 400);
         await init(env);
         await env.DB.prepare('UPDATE passes SET has = ?1, needs = ?2, handle = ?3, listed = ?4, card_at = ?5 WHERE gh_id = ?6').bind(has, needs, handle, b.listed === false ? 0 : 1, nowSec(), s.id).run();
-        memo.at = 0;
+        memo.at = 0; boardMemo.at = 0;
         return json({ ok: true, has, needs, handle });
       }
       if (path === '/api/verify' && req.method === 'POST') {
@@ -622,7 +623,8 @@ export default {
         await init(env);
         await env.DB.batch([env.DB.prepare('DELETE FROM passes WHERE gh_id = ?1').bind(s.id), env.DB.prepare('DELETE FROM jobs WHERE gh_id = ?1').bind(s.id)]);
         memo.at = 0;
-        return json({ ok: true }, 200, { 'set-cookie': 'aa_s=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax' });
+        boardMemo.at = 0;
+        return new Response(JSON.stringify({ ok: true }), { headers: [['content-type', 'application/json; charset=utf-8'], ['set-cookie', 'aa_s=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax'], ['set-cookie', 'aa_u=; Path=/; Max-Age=0; Secure; SameSite=Lax']] });
       }
       return json({ error: 'not_found' }, 404);
     }
@@ -637,6 +639,7 @@ export default {
       const locs = ['/', '/agent/claude-code', '/agent/codex', '/agent/cursor', '/agent/copilot', '/rules', '/method'];
       return new Response(`<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${locs.map((l) => `<url><loc>${ORIGIN}${l}</loc><changefreq>hourly</changefreq></url>`).join('')}</urlset>`, { headers: { 'content-type': 'application/xml; charset=utf-8' } });
     }
+    if (path === '/BingSiteAuth.xml') return new Response('<?xml version="1.0"?>\n<users>\n\t<user>DEA6AF4FED93F24775F8751C83954829</user>\n</users>', { headers: { 'content-type': 'text/xml' } });
     if (env.FLEET_KEY && path === `/${env.FLEET_KEY}.txt`) return new Response(env.FLEET_KEY, { headers: { 'content-type': 'text/plain; charset=utf-8' } });
     if (path === '/llms.txt') {
       const t = await getTide(env);
@@ -662,7 +665,12 @@ export default {
     if (!kind) return new Response('Not found. Try https://agents.myclawn.com/', { status: 404, headers: { 'content-type': 'text/plain; charset=utf-8' } });
     const tide = await getTide(env);
     const pass = kind === 'user' ? await getPass(env, a) : null;
-    return new Response(render(kind, a, b, tide, pass), {
+    let extra = null;
+    if (kind === 'home' || kind === 'user' || kind === 'repo') {
+      const [boards, dep, net] = await Promise.all([getBoards(env), getFund(), getNet()]);
+      extra = { top: boards.top, lounge: boards.lounge, dep: dep || null, net: net || null };
+    }
+    return new Response(render(kind, a, b, tide, pass, extra), {
       headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'public, max-age=30', ...SECURITY },
     });
   },
