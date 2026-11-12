@@ -296,3 +296,6 @@ h2{margin:0 0 10px;font:700 12px/1 var(--mono);letter-spacing:.16em;text-transfo
 .ct tbody th a{color:inherit;text-decoration:none;border-bottom:1px dotted var(--faint)}
 .ct tbody th a:hover{color:var(--amber)}
 .footnav{flex-basis:100%;display:flex;flex-wrap:wrap;gap:8px 18px;margin-bottom:10px}
+
+.bz td:nth-child(2) a{font-weight:600;color:var(--amber)}
+.bz td:nth-child(2) a:hover{color:var(--ink)}

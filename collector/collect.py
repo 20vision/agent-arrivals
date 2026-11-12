@@ -203,6 +203,36 @@ def sample(items):
     return {"n": len(opened), "owner": owner, "team": team, "outside": len(opened) - owner - team}
 
 
+def busy_repos(state, items, now):
+    """Repositories with the most agent pull requests among those that passed over the board in the last 6 hours.
+    Each pull request is counted once. It is a sample of all arrivals, and the page says so."""
+    seen = state.get("busy_seen") or []
+    seen_set = set(seen)
+    buckets = state.get("busy_buckets") or {}
+    b = str(now - now % 300)
+    cur = buckets.setdefault(b, {})
+    for it in items:
+        if it["s"] != "opened":
+            continue
+        key = f'{it["r"]}#{it["n"]}'
+        if key in seen_set:
+            continue
+        seen_set.add(key)
+        seen.append(key)
+        cur[it["r"]] = cur.get(it["r"], 0) + 1
+    horizon = now - 6 * 3600
+    buckets = {k: v for k, v in buckets.items() if int(k) >= horizon}
+    state["busy_buckets"] = buckets
+    state["busy_seen"] = seen[-6000:]
+    total = {}
+    for v in buckets.values():
+        for r, n in v.items():
+            total[r] = total.get(r, 0) + n
+    top = sorted(total.items(), key=lambda x: (-x[1], x[0]))[:12]
+    span = (now - min(int(k) for k in buckets)) / 3600 if buckets else 0
+    return [{"r": r, "n": n} for r, n in top if n >= 3], round(span + 5 / 60, 1)
+
+
 def read_key():
     try:
         for line in open(KEYS, encoding="utf-8"):
@@ -262,6 +292,8 @@ def main():
     if table_30d(state, now, budget):
         save(state)
 
+    busy, busy_hours = busy_repos(state, items, now)
+    save(state)
     snapshot = {
         "at": state.get("h24_at") or now,
         "tape_at": now,
@@ -270,6 +302,8 @@ def main():
         "d30_at": state.get("d30_at") or 0,
         "hours": hours,
         "sample": sample(items),
+        "busy": busy,
+        "busy_hours": busy_hours,
         "tape": [{k: v for k, v in it.items() if k != "assoc"} for it in items],
     }
     summary = f"calls={CALLS} tape={len(items)} h24_all={snapshot['h24'].get('all_agents')} all_prs={snapshot['h24'].get('all_prs')} hours={len(hours)} d30={list(snapshot['d30'])}"

@@ -90,6 +90,17 @@
     } else {
       sp.hidden = true;
     }
+    var busy = tide.busy || [];
+    if ($('busy')) {
+      if (busy.length >= 5) {
+        $('busybox').innerHTML = '<table class="fl bz"><thead><tr><th scope="col">#</th><th scope="col">Repository</th><th scope="col">Agent pull requests seen</th></tr></thead><tbody>' + busy.map(function (x, i) {
+          return '<tr><td>' + (i + 1) + '</td><td><a href="/' + esc(x.r) + '">' + esc(x.r) + '</a></td><td>' + fmt(x.n) + '</td></tr>';
+        }).join('') + '</tbody></table>';
+        var hrs = tide.busy_hours || 0;
+        $('busyspan').textContent = hrs >= 1.5 ? 'in the last ' + Math.round(hrs) + ' hours.' : 'in the last hour.';
+        $('busy').hidden = false;
+      } else $('busy').hidden = true;
+    }
     if (tide.made && tide.made.recap >= 20 && $('made')) $('made').textContent = fmt(tide.made.recap) + ' recaps made so far.';
   }
 

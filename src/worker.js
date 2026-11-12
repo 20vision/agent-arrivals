@@ -33,7 +33,7 @@ const COUNTED = {
 const TRUST = 'From 20Vision, makers of AI Architectures · 16,000+ users · customers in 75+ countries · since 2022';
 // Sections each kind of page keeps. Everything else is cut on the server, so each page stands on its own.
 const KEEP = {
-  home: ['result', 'hero', 'board', 'carriers', 'flyers', 'lounge', 'departures', 'address', 'rules', 'method'],
+  home: ['result', 'hero', 'board', 'busy', 'carriers', 'flyers', 'lounge', 'departures', 'address', 'rules', 'method'],
   agent: ['hero', 'board', 'carriers', 'about', 'method'],
   rules: ['rules', 'method'],
   method: ['method', 'carriers'],
@@ -159,6 +159,15 @@ function cleanTide(d) {
   if (num(d.d30_at)) out.d30_at = num(d.d30_at);
   if (Array.isArray(d.hours)) out.hours = d.hours.slice(-24).map((h) => ({ t: num(h.t), n: num(h.n) })).filter((h) => h.t && h.n !== null);
   if (d.sample && num(d.sample.n)) out.sample = { n: num(d.sample.n), owner: num(d.sample.owner) || 0, team: num(d.sample.team) || 0, outside: num(d.sample.outside) || 0 };
+  if (Array.isArray(d.busy)) {
+    out.busy = [];
+    for (const it of d.busy.slice(0, 12)) {
+      const m = /^([^/\s]+)\/([^/\s]+)$/.exec(String((it && it.r) || ''));
+      const n = num(it && it.n);
+      if (m && LOGIN.test(m[1]) && REPO.test(m[2]) && n) out.busy.push({ r: m[0], n });
+    }
+    out.busy_hours = Math.min(6, Math.max(0, Number(d.busy_hours) || 0));
+  }
   if (Array.isArray(d.tape)) {
     for (const it of d.tape.slice(0, 200)) {
       if (!it || !['claude', 'codex', 'cursor', 'copilot'].includes(it.a) || !['opened', 'landed', 'turned'].includes(it.s)) continue;
