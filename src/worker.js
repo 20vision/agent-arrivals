@@ -95,17 +95,27 @@ async function init(env) {
 }
 
 let memo = { at: 0, tide: null };
+async function read(env, statements) {
+  try { return await env.DB.batch(statements(env.DB)); } catch (e) {
+    if (!/no such table/i.test(String(e && e.message))) throw e;
+    await init(env);
+    return env.DB.batch(statements(env.DB));
+  }
+}
 async function getTide(env) {
   const now = Date.now();
   if (now - memo.at < 20000) return memo.tide;
-  await init(env);
-  const row = await env.DB.prepare("SELECT v FROM blobs WHERE k = 'tide'").first();
+  const [a, made, cnt] = await read(env, (db) => [
+    db.prepare("SELECT v FROM blobs WHERE k = 'tide'"),
+    db.prepare('SELECT name, SUM(n) AS n FROM counters GROUP BY name'),
+    db.prepare('SELECT COUNT(*) AS n FROM passes'),
+  ]);
+  const row = a.results && a.results[0];
   let tide = null;
   if (row) { try { tide = JSON.parse(row.v); } catch { tide = null; } }
-  const made = await env.DB.prepare('SELECT name, SUM(n) AS n FROM counters GROUP BY name').all();
   const m = {};
   for (const r of made.results || []) m[r.name] = r.n;
-  const c = await env.DB.prepare('SELECT COUNT(*) AS n FROM passes').first();
+  const c = cnt.results && cnt.results[0];
   m.claimed = (c && c.n) || 0;
   if (tide) tide.made = m; else tide = { made: m };
   memo = { at: now, tide };
@@ -116,10 +126,12 @@ let boardMemo = { at: 0, top: null, lounge: null };
 async function getBoards(env) {
   const now = Date.now();
   if (boardMemo.top && now - boardMemo.at < 30000) return boardMemo;
-  await init(env);
-  const rows = await env.DB.prepare('SELECT login, total, merged FROM passes WHERE listed = 1 AND verified_at IS NOT NULL AND total > 0 ORDER BY total DESC, claimed_at ASC LIMIT 50').all();
-  const c = await env.DB.prepare('SELECT COUNT(*) AS n FROM passes').first();
-  const l = await env.DB.prepare("SELECT login, total, has, needs, handle FROM passes WHERE listed = 1 AND (has != '' OR needs != '') ORDER BY card_at DESC LIMIT 60").all();
+  const [rows, cnt, l] = await read(env, (db) => [
+    db.prepare('SELECT login, total, merged FROM passes WHERE listed = 1 AND verified_at IS NOT NULL AND total > 0 ORDER BY total DESC, claimed_at ASC LIMIT 50'),
+    db.prepare('SELECT COUNT(*) AS n FROM passes'),
+    db.prepare("SELECT login, total, has, needs, handle FROM passes WHERE listed = 1 AND (has != '' OR needs != '') ORDER BY card_at DESC LIMIT 60"),
+  ]);
+  const c = cnt.results && cnt.results[0];
   boardMemo = { at: now, top: { claimed: (c && c.n) || 0, top: rows.results || [] }, lounge: l.results || [] };
   return boardMemo;
 }
@@ -138,8 +150,8 @@ function publicPass(r) {
   return { login: r.login, total: r.total, merged: r.merged, abroad: r.abroad, top: r.top || '', first: r.first || '', fam, langs, has: r.has || '', needs: r.needs || '', handle: r.handle || '', listed: !!r.listed, claimed_at: r.claimed_at, verified_at: r.verified_at || null };
 }
 async function getPass(env, login) {
-  await init(env);
-  return publicPass(await env.DB.prepare('SELECT * FROM passes WHERE login_lc = ?1').bind(String(login).toLowerCase()).first());
+  const [r] = await read(env, (db) => [db.prepare('SELECT * FROM passes WHERE login_lc = ?1').bind(String(login).toLowerCase())]);
+  return publicPass(r.results && r.results[0]);
 }
 
 // ---------------------------------------------------------------- ingest
@@ -673,15 +685,22 @@ export default {
     else if (seg.length === 1 && !RESERVED.has(seg[0].toLowerCase()) && LOGIN.test(seg[0])) { kind = 'user'; a = seg[0]; }
     else if (seg.length === 2 && !RESERVED.has(seg[0].toLowerCase()) && LOGIN.test(seg[0]) && REPO.test(seg[1])) { kind = 'repo'; a = seg[0]; b = seg[1]; }
     if (!kind) return new Response('Not found. Try https://agents.myclawn.com/', { status: 404, headers: { 'content-type': 'text/plain; charset=utf-8' } });
-    const tide = await getTide(env);
-    const pass = kind === 'user' ? await getPass(env, a) : null;
+    const cacheable = req.method === 'GET' && !url.searchParams.has('claimed') && !url.searchParams.has('fresh');
+    const cacheKey = new Request(`${ORIGIN}/__page${path}`);
+    if (cacheable) {
+      const hit = await caches.default.match(cacheKey);
+      if (hit) return hit;
+    }
+    const [tide, pass] = await Promise.all([getTide(env), kind === 'user' ? getPass(env, a) : null]);
     let extra = null;
     if (kind === 'home' || kind === 'user' || kind === 'repo') {
       const [boards, dep, net] = await Promise.all([getBoards(env), getFund(), getNet()]);
       extra = { top: boards.top, lounge: boards.lounge, dep: dep || null, net: net || null };
     }
-    return new Response(render(kind, a, b, tide, pass, extra), {
+    const res = new Response(render(kind, a, b, tide, pass, extra), {
       headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'public, max-age=30', ...SECURITY },
     });
+    if (cacheable) ctx.waitUntil(caches.default.put(cacheKey, res.clone()));
+    return res;
   },
 };
