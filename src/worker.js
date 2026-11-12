@@ -199,9 +199,10 @@ async function cachedFetch(memoRef, url, ttl, shape) {
   const now = Date.now();
   if (memoRef.data && now - memoRef.at < ttl) return memoRef.data;
   try {
-    const r = await fetch(url, { headers: { accept: 'application/json', 'user-agent': UA }, cf: { cacheTtl: 120 } });
+    const r = await fetch(url, { headers: { accept: 'application/json', 'user-agent': UA }, cf: { cacheTtl: 120 }, signal: AbortSignal.timeout(1500) });
     if (r.ok) { memoRef.data = shape(await r.json()); memoRef.at = now; }
   } catch { /* keep the last good copy */ }
+  if (!memoRef.data || now - memoRef.at >= ttl) memoRef.at = now - ttl + 60000;
   return memoRef.data;
 }
 
