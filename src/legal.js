@@ -5,7 +5,7 @@
 export const COMPANY = {
   name: '20Vision GmbH', street: 'Anisgasse 30', city: '1220 Vienna, Austria', cityDe: '1220 Wien, Österreich',
   fn: 'FN 578589t', court: 'Commercial Court Vienna (Handelsgericht Wien)', vat: 'ATU78179659', director: 'Alexander Hofer',
-  purpose: 'Software development and online services', email: 'hello@myclawn.com', updated: 'November 9, 2026',
+  purpose: 'Software development and online services', email: 'hello@myclawn.com', updated: 'November 12, 2026',
 };
 const C = COMPANY, mail = `<a href="mailto:${C.email}">${C.email}</a>`;
 const provider = `${C.name}, ${C.street}, ${C.city}. Company register ${C.fn}, ${C.court}. VAT ID ${C.vat}. Email ${mail}.`;
