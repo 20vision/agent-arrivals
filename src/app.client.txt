@@ -1,0 +1,772 @@
+(function () {
+  'use strict';
+  var B = window.__BOOT__ || {};
+  var RM = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  var YEAR = 2026;
+  var AG = { claude: 'Claude Code', codex: 'Codex', cursor: 'Cursor', copilot: 'Copilot' };
+  var ST = { opened: 'Opened', landed: 'Landed', turned: 'Turned back' };
+  var SIG = '("Generated with Claude Code" OR head:claude/ OR head:codex/ OR head:cursor/ OR head:copilot/)';
+  var FAM = { claude: '("Generated with Claude Code" OR head:claude/)', codex: 'head:codex/', cursor: 'head:cursor/', copilot: 'head:copilot/' };
+  var LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$/;
+  var REPO = /^(?!\.{1,2}$)[A-Za-z0-9._-]{1,100}$/;
+  var SITE = 'https://agents.myclawn.com';
+
+  function $(id) { return document.getElementById(id); }
+  function esc(s) { return String(s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+  function fmt(n) { return Number(n).toLocaleString('en-US'); }
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+  function ev(name, props) { try { (window.trackq = window.trackq || []).push(['event', name, props || {}]); } catch (e) { /* analytics is optional */ } }
+  function bucket(n) { return n >= 10000 ? '10000+' : n >= 1000 ? '1000+' : n >= 100 ? '100+' : n >= 10 ? '10+' : n >= 1 ? '1+' : '0'; }
+  function pad(n) { return (n < 10 ? '0' : '') + n; }
+  function hhmm(t) { var d = new Date(t * 1000); return pad(d.getHours()) + ':' + pad(d.getMinutes()); }
+  function ago(t) {
+    var s = Math.max(0, Math.floor(Date.now() / 1000) - t);
+    if (s < 90) return 'a minute ago';
+    if (s < 3600) return Math.round(s / 60) + ' min ago';
+    if (s < 86400) return Math.round(s / 3600) + ' h ago';
+    return Math.round(s / 86400) + ' d ago';
+  }
+  function pct(a, b) { return b ? Math.round((100 * a) / b) + '%' : ''; }
+
+  // ------------------------------------------------------------ big number
+  function flaps(el, text, animate) {
+    el.textContent = '';
+    String(text).split('').forEach(function (ch, i) {
+      var s = document.createElement('span');
+      if (/[0-9]/.test(ch)) {
+        s.className = 'flap';
+        s.textContent = ch;
+        if (animate && !RM) spin(s, ch, i);
+      } else {
+        s.className = 'sep';
+        s.textContent = ch;
+      }
+      el.appendChild(s);
+    });
+  }
+  function spin(s, fin, i) {
+    var k = 0, total = 8 + i * 3;
+    s.classList.add('tick');
+    var t = setInterval(function () {
+      s.textContent = String(Math.floor(Math.random() * 10));
+      if (++k >= total) { clearInterval(t); s.textContent = fin; s.classList.remove('tick'); }
+    }, 48);
+  }
+
+  var tide = B.tide || {};
+  var shownTotal = null;
+  function renderTide() {
+    var h = tide.h24 || {};
+    var big = $('big');
+    if (!big) return;
+    var key = B.kind === 'agent' && B.a ? B.a : 'all_agents';
+    if (h[key]) {
+      if (shownTotal !== h[key]) { flaps(big, fmt(h[key]), true); shownTotal = h[key]; }
+      if ($('rate')) $('rate').textContent = 'About ' + fmt(Math.round(h[key] / 1440)) + ' a minute.';
+    } else if (shownTotal === null) {
+      flaps(big, big.textContent, false);
+      shownTotal = 0;
+    }
+    big.classList.toggle('long', String(big.textContent).length > 7);
+    var fams = ['claude', 'codex', 'cursor', 'copilot'].filter(function (k) { return typeof h[k] === 'number'; });
+    if (fams.length) {
+      var top = 1;
+      fams.forEach(function (k) { if (h[k] > top) top = h[k]; });
+      $('todaylist').innerHTML = fams.map(function (k) {
+        return '<li><span><i class="dot ' + k + '"></i>' + AG[k] + '</span><b>' + fmt(h[k]) + '</b><em><i style="width:' + Math.max(1, Math.round((100 * h[k]) / top)) + '%"></i></em></li>';
+      }).join('');
+      $('todayall').textContent = h.all_prs ? 'All pull requests opened on public GitHub in that time: ' + fmt(h.all_prs) + '.' : '';
+      $('today').hidden = false;
+    }
+    var hrs = (tide.hours || []).slice(-24);
+    var sp = $('spark');
+    if (hrs.length >= 6) {
+      var max = 1;
+      hrs.forEach(function (x) { if (x.n > max) max = x.n; });
+      sp.hidden = false;
+      sp.innerHTML = hrs.map(function (x, i) {
+        return '<i' + (i === hrs.length - 1 ? ' class="now"' : '') + ' style="height:' + Math.max(6, Math.round((100 * x.n) / max)) + '%" title="' + fmt(x.n) + ' opened in the hour from ' + hhmm(x.t) + '"></i>';
+      }).join('');
+    } else {
+      sp.hidden = true;
+    }
+    if (tide.made && tide.made.recap >= 20 && $('made')) $('made').textContent = fmt(tide.made.recap) + ' recaps made so far.';
+  }
+
+  // ------------------------------------------------------------ board
+  var tape = [], ptr = 0, boardTimer = null, MAXROWS = 10, lastMax = 0;
+  function rowEl(it, anim) {
+    var a = document.createElement('a');
+    a.className = 'r ' + it.s + (anim && !RM ? ' in' : '');
+    a.href = 'https://github.com/' + it.r + '/pull/' + it.n;
+    a.target = '_blank';
+    a.rel = 'noopener nofollow';
+    a.title = AG[it.a] + ' · ' + ago(it.t);
+    a.innerHTML = '<span class="c t">' + hhmm(it.t) + '</span><span class="c a"><i class="dot ' + it.a + '"></i>' + AG[it.a] + '</span><span class="c repo">' + esc(it.r) + '</span><span class="c ti">' + esc(it.title) + '</span><span class="c st">' + ST[it.s] + '</span>';
+    return a;
+  }
+  function setTape(list) {
+    if (!$('rows')) return;
+    var only = B.kind === 'agent' ? B.a : null;
+    var next = (list || []).filter(function (x) { return x && x.t && AG[x.a] && ST[x.s] && (!only || x.a === only); }).sort(function (p, q) { return p.t - q.t; });
+    if (!next.length) return;
+    var newest = next[next.length - 1].t;
+    var hadRows = tape.length > 0;
+    tape = next;
+    if (!hadRows) {
+      var rows = $('rows');
+      rows.textContent = '';
+      var start = Math.max(0, tape.length - 90);
+      var first = Math.min(tape.length, start + MAXROWS);
+      for (var i = start; i < first; i++) rows.insertBefore(rowEl(tape[i], false), rows.firstChild);
+      ptr = first;
+    } else if (newest > lastMax) {
+      for (var j = 0; j < tape.length; j++) { if (tape[j].t > lastMax) { ptr = j; break; } }
+    } else {
+      ptr = ptr % tape.length;
+    }
+    lastMax = newest;
+    if (!boardTimer) boardTimer = setInterval(tick, 2400);
+  }
+  function tick() {
+    if (document.hidden || !tape.length) return;
+    if (ptr >= tape.length) ptr = Math.max(0, tape.length - 90);
+    var rows = $('rows');
+    rows.insertBefore(rowEl(tape[ptr++], true), rows.firstChild);
+    while (rows.children.length > MAXROWS) rows.removeChild(rows.lastChild);
+  }
+  function poll() {
+    fetch('/api/tide').then(function (r) { return r.ok ? r.json() : null; }).then(function (t) {
+      if (!t || !t.at) return;
+      tide = t;
+      renderTide();
+      setTape(t.tape);
+    }).catch(function () { /* keep what we have */ });
+  }
+
+  // ------------------------------------------------------------ github search from the browser
+  var RUN = 0;
+  function status(msg) { var el = $('p-status'); if (el) el.textContent = msg || ''; }
+  async function countdown(sec, my) {
+    for (var s = sec; s > 0; s--) {
+      if (my !== RUN) return;
+      status('GitHub lets a browser run ten searches a minute. Continuing in ' + s + ' s.');
+      await sleep(1000);
+    }
+    status('');
+  }
+  async function gh(q, o, my) {
+    o = o || {};
+    var u = 'https://api.github.com/search/issues?q=' + encodeURIComponent(q) + '&per_page=' + (o.n || 1) + '&advanced_search=true' + (o.sort ? '&sort=' + o.sort + '&order=' + (o.order || 'desc') : '');
+    for (var tries = 0; tries < 6; tries++) {
+      var r;
+      try { r = await fetch(u, { headers: { Accept: 'application/vnd.github+json' } }); } catch (e) { throw new Error('network'); }
+      if (r.status === 403 || r.status === 429) {
+        var ra = parseInt(r.headers.get('retry-after') || '0', 10);
+        var reset = parseInt(r.headers.get('x-ratelimit-reset') || '0', 10);
+        var wait = ra > 0 ? ra : (reset ? Math.ceil(reset - Date.now() / 1000) + 1 : 20);
+        wait = Math.max(3, Math.min(wait, 70));
+        if (o.quiet) await sleep(wait * 1000); else await countdown(wait, my);
+        if (my !== RUN) throw new Error('stale');
+        continue;
+      }
+      if (r.status === 422) throw new Error('notfound');
+      if (!r.ok) throw new Error('github ' + r.status);
+      var j = await r.json();
+      await sleep(o.gap || 1100);
+      if (my !== RUN) throw new Error('stale');
+      return j;
+    }
+    throw new Error('ratelimit');
+  }
+  function setText(id, text, cls) {
+    var el = $(id);
+    if (!el) return;
+    el.textContent = text;
+    el.classList.remove('wait');
+    if (cls) el.classList.add(cls);
+  }
+  function tierOf(n) {
+    if (n >= 10000) return 'Owns the airport';
+    if (n >= 1000) return 'Air traffic control';
+    if (n >= 100) return 'Captain';
+    if (n >= 10) return 'Frequent flyer';
+    if (n >= 1) return 'Carry-on only';
+    return 'Standby';
+  }
+  function barsHtml(list) {
+    var max = 1;
+    list.forEach(function (x) { if (x.n > max) max = x.n; });
+    return list.filter(function (x) { return x.n > 0; }).map(function (x) {
+      return '<div class="bar"><span>' + x.name + '</span><span class="track"><i data-w="' + Math.max(1, Math.round((100 * x.n) / max)) + '"></i></span><span class="v">' + fmt(x.n) + '</span></div>';
+    }).join('');
+  }
+  function growBars(root) {
+    requestAnimationFrame(function () {
+      Array.prototype.forEach.call(root.querySelectorAll('.track i'), function (i) { i.style.width = i.getAttribute('data-w') + '%'; });
+    });
+  }
+  function barcode(el, seed) {
+    var html = '';
+    for (var i = 0; i < 38; i++) {
+      var w = 1 + ((seed.charCodeAt(i % seed.length) * (i + 3)) % 4);
+      html += '<i style="width:' + w + 'px;' + (i % 5 === 4 ? 'margin-right:3px' : '') + '"></i>';
+    }
+    el.innerHTML = html;
+  }
+  function bridgeHtml() {
+    return '<div class="bridge">'
+      + '<a href="#departures" data-b="fund"><small>Departures</small><b>Send an idle agent where it was asked for</b><span>Open source projects that listed themselves for agent help. Your spare usage, their pull requests.</span></a>'
+      + '<a href="#address" data-b="address"><small>Address</small><b>Give your agents an address</b><span>A card other people’s agents can find and message, behind a firewall. Anything that commits you waits for your yes.</span></a>'
+      + '</div>';
+  }
+  function shareUrl(path, medium, campaign) { return SITE + '/' + path + '?utm_source=share&utm_medium=' + medium + '&utm_campaign=' + campaign; }
+  function actionsHtml(extra) {
+    return '<div class="actions" id="p-actions" hidden>'
+      + '<a class="btn primary" id="s-x" target="_blank" rel="noopener">Post on X</a>'
+      + '<a class="btn" id="s-li" target="_blank" rel="noopener">LinkedIn</a>'
+      + '<a class="btn" id="s-bs" target="_blank" rel="noopener">Bluesky</a>'
+      + '<button class="btn" type="button" id="s-copy">Copy link</button>'
+      + (extra || '')
+      + '</div>';
+  }
+  function wireShare(path, text, campaign) {
+    $('s-x').href = 'https://x.com/intent/post?text=' + encodeURIComponent(text + ' ' + shareUrl(path, 'x', campaign));
+    $('s-li').href = 'https://www.linkedin.com/sharing/share-offsite/?url=' + encodeURIComponent(shareUrl(path, 'linkedin', campaign));
+    $('s-bs').href = 'https://bsky.app/intent/compose?text=' + encodeURIComponent(text + ' ' + shareUrl(path, 'bluesky', campaign));
+    ['s-x', 's-li', 's-bs'].forEach(function (id) { $(id).addEventListener('click', function () { ev('share_click', { net: id.slice(2), what: campaign }); }); });
+    $('s-copy').addEventListener('click', function () { copy(shareUrl(path, 'copy', campaign), $('s-copy'), 'Copy link'); ev('share_click', { net: 'copy', what: campaign }); });
+    $('p-actions').hidden = false;
+  }
+  function copy(text, btn, label) {
+    var done = function () { btn.textContent = 'Copied'; setTimeout(function () { btn.textContent = label; }, 1600); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done, function () { fallbackCopy(text); done(); });
+    else { fallbackCopy(text); done(); }
+  }
+  function fallbackCopy(text) {
+    var ta = document.createElement('textarea');
+    ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select();
+    try { document.execCommand('copy'); } catch (e) { /* nothing else to try */ }
+    document.body.removeChild(ta);
+  }
+  function fail(e, what) {
+    if (e && e.message === 'stale') return;
+    var res = $('result');
+    var msg;
+    if (e && e.message === 'notfound') msg = '<b>GitHub has nothing public called ' + esc(what) + '.</b><p>Check the spelling. Private repositories and private accounts can’t be read from here.</p>';
+    else if (e && e.message === 'network') msg = '<b>Could not reach GitHub.</b><p>Your browser asks api.github.com directly. Check the connection, or a blocker that stops it, and try again.</p>';
+    else if (e && e.message === 'ratelimit') msg = '<b>GitHub is asking this network to slow down.</b><p>It allows ten searches a minute per network. Try again in a minute.</p>';
+    else msg = '<b>GitHub answered with an error.</b><p>Try again in a minute.</p>';
+    res.innerHTML = '<div class="res-msg">' + msg + '</div>';
+    ev('lookup_error', { code: (e && e.message) || 'unknown' });
+  }
+
+  // ------------------------------------------------------------ claiming a pass (GitHub sign-in with a code, public information only)
+  var meLoaded = null;
+  function loadMe() {
+    if (!meLoaded) meLoaded = fetch('/api/me', { credentials: 'same-origin' }).then(function (r) { return r.ok ? r.json() : {}; }).then(function (m) { return m && m.login ? m.login : null; }).catch(function () { return null; });
+    return meLoaded;
+  }
+  function same(a, b) { return String(a || '').toLowerCase() === String(b || '').toLowerCase(); }
+  function claimHtml() {
+    return '<div class="claim" id="claim"><h3>Is this you? Claim your pass</h3>'
+      + '<p>Sign in with GitHub. It asks for public information only.</p>'
+      + '<ul><li>Your pass loads at once for everyone you send it to</li><li>A place on the Frequent flyers board</li><li>A badge for your GitHub profile</li><li>Two lines in the Lounge: what you have, what you need</li></ul>'
+      + '<button class="btn primary" type="button" id="claimbtn">Claim with GitHub</button>'
+      + '<div id="claimflow" hidden></div></div>';
+  }
+  function startClaim() {
+    var box = $('claimflow'), btn = $('claimbtn');
+    btn.disabled = true;
+    btn.textContent = 'Asking GitHub for a code…';
+    ev('claim_start', {});
+    fetch('/auth/device/start', { method: 'POST', credentials: 'same-origin' }).then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); }).then(function (x) {
+      if (!x.ok || !x.j.user_code) throw new Error(x.j.error || 'failed');
+      btn.hidden = true;
+      box.hidden = false;
+      box.innerHTML = '<ol class="steps"><li>Copy this code</li></ol><div class="code"><b id="ucode">' + esc(x.j.user_code) + '</b><button class="btn" type="button" id="ucopy">Copy code</button></div>'
+        + '<ol class="steps" start="2"><li>Open GitHub, paste it and approve. This page finishes by itself.</li></ol>'
+        + '<a class="btn primary" id="ugo" target="_blank" rel="noopener" href="' + esc(x.j.verification_uri) + '">Open GitHub</a>'
+        + '<p class="fine" id="ustat">Waiting for GitHub. The code is good for 15 minutes.</p>';
+      $('ucopy').addEventListener('click', function () { copy(x.j.user_code, this, 'Copy code'); });
+      var wait = Math.max(5, x.j.interval || 5) * 1000, until = Date.now() + (x.j.expires_in || 900) * 1000;
+      (function poll() {
+        if (Date.now() > until) { $('ustat').textContent = 'The code ran out. Reload the page to get a new one.'; return; }
+        setTimeout(function () {
+          fetch('/auth/device/poll', { method: 'POST', credentials: 'same-origin' }).then(function (r) { return r.json(); }).then(function (j) {
+            if (j.ok && j.login) { ev('claim_done', {}); location.href = '/' + j.login + '?claimed=1'; return; }
+            if (j.pending) { if (j.slow) wait += 5000; poll(); return; }
+            if ($('ustat')) $('ustat').textContent = j.error === 'not_a_user_account' ? 'Only personal GitHub accounts can claim a pass.' : 'GitHub did not approve it. Reload the page to try again.';
+          }).catch(function () { poll(); });
+        }, wait);
+      })();
+    }).catch(function () {
+      btn.disabled = false;
+      btn.textContent = 'Try again';
+      box.hidden = false;
+      box.innerHTML = '<p class="fine">GitHub did not answer. Try again in a moment.</p>';
+    });
+  }
+  function notesHtml(p) {
+    if (!p || (!p.has && !p.needs && !p.handle)) return '';
+    return '<div class="notes">'
+      + '<div><small>Has</small><p' + (p.has ? '' : ' class="muted"') + '>' + esc(p.has || 'Nothing listed yet') + '</p></div>'
+      + '<div><small>Needs</small><p' + (p.needs ? '' : ' class="muted"') + '>' + esc(p.needs || 'Nothing listed yet') + '</p></div></div>'
+      + (p.handle ? '<p class="res-note">Their agent’s address on MyClawn Contacts: <code>' + esc(p.handle) + '</code>. Tell your agent: “message ' + esc(p.handle) + ' on MyClawn”.</p>' : '');
+  }
+  function ownerHtml(p) {
+    var md = '[![Agent Recap ' + YEAR + '](' + SITE + '/badge/' + p.login + '.svg)](' + SITE + '/' + p.login + ')';
+    var hint = p.langs && p.langs.length ? 'e.g. ' + p.langs.join(', ') + ', spare agent hours' : 'e.g. code reviews, spare agent hours, a newsletter slot';
+    return '<div class="owner" id="owner"><h3>Your pass, @' + esc(p.login) + '</h3>'
+      + '<div><label>Badge for your GitHub profile README</label><div class="genout" style="margin-top:6px"><pre id="badgemd">' + esc(md) + '</pre><button type="button" id="badgecopy">Copy</button></div>'
+      + '<img alt="Preview of the badge" src="/badge/' + esc(p.login) + '.svg?v=' + (p.verified_at || 0) + '" width="360" height="72" style="max-width:100%;height:auto;margin-top:10px;display:block"></div>'
+      + '<form id="cardform" style="display:grid;gap:14px">'
+      + '<label>Has: one line on what you can offer<input type="text" id="c-has" maxlength="140" placeholder="' + esc(hint) + '" value="' + esc(p.has || '') + '"></label>'
+      + '<label>Needs: one line on what you are looking for<input type="text" id="c-needs" maxlength="140" placeholder="e.g. beta testers for a CLI, a designer for a logo" value="' + esc(p.needs || '') + '"></label>'
+      + '<label>Your agent’s handle on MyClawn Contacts (optional)<input type="text" id="c-handle" maxlength="40" placeholder="leave empty if you have none" value="' + esc(p.handle || '') + '"></label>'
+      + '<label class="chk"><input type="checkbox" id="c-listed"' + (p.listed ? ' checked' : '') + '> Show me on Frequent flyers and in the Lounge</label>'
+      + '<div class="rowb"><button class="btn primary" type="submit">Save</button><span id="c-msg"></span></div></form>'
+      + '<div id="c-again" hidden></div>'
+      + '<div class="rowb"><button class="linkbtn" type="button" id="c-refresh">Count my pull requests again</button><button class="linkbtn" type="button" id="c-out">Sign out</button><button class="linkbtn" type="button" id="c-forget">Remove my pass and everything stored with it</button></div></div>';
+  }
+  function wireOwner(p) {
+    $('badgecopy').addEventListener('click', function () { copy($('badgemd').textContent, this, 'Copy'); ev('badge_copy', {}); });
+    $('cardform').addEventListener('submit', function (e) {
+      e.preventDefault();
+      var msg = $('c-msg');
+      msg.className = '';
+      msg.textContent = 'Saving…';
+      fetch('/api/card', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ has: $('c-has').value, needs: $('c-needs').value, handle: $('c-handle').value, listed: $('c-listed').checked }) })
+        .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+        .then(function (x) {
+          if (!x.ok) {
+            msg.className = 'err';
+            msg.textContent = x.j.error === 'handle' ? 'That handle has characters Contacts does not use.' : x.j.error === 'wording' ? 'Please reword that.' : x.j.error === 'sign_in' ? 'Your sign-in ran out. Claim again to edit.' : 'Could not save. Try again.';
+            return;
+          }
+          msg.className = 'saved';
+          msg.textContent = 'Saved.';
+          p.has = x.j.has; p.needs = x.j.needs; p.handle = x.j.handle;
+          $('p-notes').innerHTML = notesHtml(p);
+          ev('card_save', { has: p.has ? 1 : 0, needs: p.needs ? 1 : 0, handle: p.handle ? 1 : 0 });
+        }).catch(function () { msg.className = 'err'; msg.textContent = 'Could not save. Try again.'; });
+    });
+    $('c-refresh').addEventListener('click', function () {
+      var slot = $('c-again');
+      slot.hidden = false;
+      slot.innerHTML = '<p class="fine" style="margin:0 0 10px">Counting again needs a fresh sign-in, because we do not keep the last one.</p><button class="btn primary" type="button" id="claimbtn">Sign in with GitHub</button><div id="claimflow" hidden></div>';
+      this.hidden = true;
+      $('claimbtn').addEventListener('click', startClaim);
+    });
+    $('c-out').addEventListener('click', function () { fetch('/auth/logout', { method: 'POST', credentials: 'same-origin' }).then(function () { location.reload(); }); });
+    var armed = false;
+    $('c-forget').addEventListener('click', function () {
+      if (!armed) { armed = true; this.textContent = 'Click again to remove your pass for good'; return; }
+      fetch('/api/forget', { method: 'POST', credentials: 'same-origin' }).then(function () { location.href = '/'; });
+    });
+  }
+  function passExtras(u, P, my) {
+    var notes = $('p-notes'), slot = $('p-claim');
+    if (!notes || !slot) return;
+    notes.innerHTML = notesHtml(P);
+    loadMe().then(function (me) {
+      if (my !== RUN || !$('p-claim')) return;
+      if (P && me && same(me, P.login)) { $('p-claim').innerHTML = ownerHtml(P); wireOwner(P); }
+      else if (!P) { $('p-claim').innerHTML = claimHtml(); $('claimbtn').addEventListener('click', startClaim); }
+    });
+    if (/[?&]claimed=1/.test(location.search)) {
+      try { history.replaceState({}, '', location.pathname); } catch (e) { /* keep the address as it is */ }
+      verifyLoop(u, my, 0);
+    }
+  }
+  // After a claim the count runs on our side, one GitHub search per call, with the claimer's own sign-in.
+  function verifyLoop(u, my, n) {
+    if (n > 60 || my !== RUN) return;
+    fetch('/api/verify', { method: 'POST', credentials: 'same-origin' }).then(function (r) { return r.json(); }).then(function (j) {
+      if (my !== RUN) return;
+      if (j.done) {
+        if (n === 0) return;
+        fetch('/api/pass/' + encodeURIComponent(u)).then(function (r) { return r.json(); }).then(function (p) {
+          if (my !== RUN || !p || !p.login) return;
+          B.pass = p;
+          try { sessionStorage.removeItem('recap:' + u.toLowerCase()); } catch (e) { /* private mode */ }
+          runUser(u, false);
+        });
+        return;
+      }
+      if (j.error) return;
+      setTimeout(function () { verifyLoop(u, my, n + 1); }, (j.wait ? j.wait * 1000 : 1800));
+    }).catch(function () { setTimeout(function () { verifyLoop(u, my, n + 1); }, 4000); });
+  }
+  function loadFlyers() {
+    fetch('/api/top').then(function (r) { return r.ok ? r.json() : null; }).then(function (d) {
+      var box = $('flyerbox');
+      if (!box || !d) return;
+      var top = d.top || [];
+      if (!top.length) box.innerHTML = '<p class="fine">Nobody has claimed a pass yet. The first one tops this board.</p>';
+      else {
+        box.innerHTML = '<table class="fl"><thead><tr><th scope="col">#</th><th scope="col">Passenger</th><th scope="col">Flights</th><th scope="col">Landed</th><th scope="col">Class</th></tr></thead><tbody>' + top.map(function (p, i) {
+          return '<tr><td>' + (i + 1) + '</td><td><a href="/' + esc(p.login) + '"><img alt="" loading="lazy" width="26" height="26" src="https://github.com/' + encodeURIComponent(p.login) + '.png?size=52">@' + esc(p.login) + '</a></td><td>' + fmt(p.total) + '</td><td>' + pct(p.merged || 0, p.total) + '</td><td class="cls">' + tierOf(p.total) + '</td></tr>';
+        }).join('') + '</tbody></table>';
+      }
+      $('flyernote').textContent = (d.claimed || 0) + (d.claimed === 1 ? ' pass' : ' passes') + ' claimed so far. Look yourself up at the top of the page, then claim yours.';
+    }).catch(function () {});
+  }
+  function loadLounge() {
+    fetch('/api/lounge').then(function (r) { return r.ok ? r.json() : null; }).then(function (list) {
+      var box = $('loungebox');
+      if (!box || !list) return;
+      if (!list.length) { box.innerHTML = '<p class="fine">Empty so far. Claim your pass and say what you have and what you need: the first notes go up here.</p>'; return; }
+      box.innerHTML = list.map(function (p) {
+        return '<div class="lcard"><a class="who2" href="/' + esc(p.login) + '"><img alt="" loading="lazy" width="28" height="28" src="https://github.com/' + encodeURIComponent(p.login) + '.png?size=56">@' + esc(p.login) + (p.total ? ' <span>' + tierOf(p.total) + '</span>' : '') + '</a>'
+          + (p.has ? '<div><small>Has</small><p>' + esc(p.has) + '</p></div>' : '')
+          + (p.needs ? '<div><small>Needs</small><p>' + esc(p.needs) + '</p></div>' : '')
+          + (p.handle ? '<p class="addr">agent: ' + esc(p.handle) + ' on MyClawn Contacts</p>' : '') + '</div>';
+      }).join('');
+    }).catch(function () {});
+  }
+
+  // ------------------------------------------------------------ recap for a user
+  function passHtml(u) {
+    return '<p class="res-kicker" id="p-kicker">Agent recap ' + YEAR + ' · counted live from GitHub</p>'
+      + '<article class="pass" id="pass"><div class="pass-main">'
+      + '<div class="pass-head"><span>Agent Recap ' + YEAR + '<span class="claimed" id="p-claimed" hidden>✓ Claimed</span></span><span>Boarding pass</span></div>'
+      + '<div class="who"><img class="av" id="p-av" alt="" width="56" height="56" src="https://github.com/' + encodeURIComponent(u) + '.png?size=160"><div><small>Passenger</small><b>@' + esc(u) + '</b></div></div>'
+      + '<div class="pgrid">'
+      + '<div class="big"><small>Flights · pull requests their agents opened in ' + YEAR + '</small><b id="p-n" class="wait">…</b></div>'
+      + '<div><small>Landed · merged</small><b id="p-m" class="wait">…</b></div>'
+      + '<div><small>Abroad · outside their own account</small><b id="p-o" class="wait">…</b></div>'
+      + '<div><small>Top destination · of the latest 30</small><b id="p-top" class="sm wait">…</b></div>'
+      + '<div><small>First flight of ' + YEAR + '</small><b id="p-first" class="sm wait">…</b></div>'
+      + '</div><div class="bars" id="p-bars"></div></div>'
+      + '<div class="pass-stub"><small>Class</small><b class="cls wait" id="p-class">…</b><small>Gate</small><b class="sm">github.com</b><small>Issued</small><b class="sm">' + new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }) + '</b><div class="barcode" id="p-code"></div><span class="url">agents.myclawn.com/' + esc(u) + '</span></div>'
+      + '</article>'
+      + '<p class="res-note" id="p-status"></p>'
+      + actionsHtml('<button class="btn" type="button" id="s-img">Save image</button>')
+      + '<p class="res-note">Public pull requests @' + esc(u) + ' opened in ' + YEAR + ' that carry an agent’s signature. Private repositories, and pull requests an agent opened under its own bot account, are not counted.</p>'
+      + '<div id="p-notes"></div><div id="p-claim"></div>'
+      + bridgeHtml();
+  }
+  function fillPass(u, d) {
+    setText('p-n', fmt(d.total));
+    setText('p-m', d.total ? fmt(d.merged) + ' · ' + pct(d.merged, d.total) : '0');
+    setText('p-o', d.abroad === null || d.abroad === undefined ? 'n/a' : fmt(d.abroad));
+    setText('p-top', d.top || 'n/a');
+    setText('p-first', d.first || 'n/a');
+    setText('p-class', tierOf(d.total));
+    var bars = $('p-bars');
+    bars.innerHTML = barsHtml(d.fam);
+    growBars(bars);
+  }
+  async function runUser(u, fromForm) {
+    var my = ++RUN;
+    var res = $('result');
+    res.hidden = false;
+    res.innerHTML = passHtml(u);
+    barcode($('p-code'), u.toLowerCase());
+    $('p-av').addEventListener('error', function () { this.style.visibility = 'hidden'; });
+    document.title = 'What did @' + u + '’s AI agents ship in ' + YEAR + '? · Agent Arrivals';
+    if (fromForm) window.scrollTo({ top: 0, behavior: RM ? 'auto' : 'smooth' });
+    var key = 'recap:' + u.toLowerCase();
+    var d = null, wired = false;
+    // Sharing opens as soon as the headline numbers are in; the rest keeps filling in.
+    function ready() {
+      if (wired || my !== RUN || !d) return;
+      wired = true;
+      var text = '@' + u + '’s AI agents opened ' + fmt(d.total) + ' pull requests on GitHub in ' + YEAR + (d.total ? ' (' + pct(d.merged, d.total) + ' merged)' : '') + '. Class: ' + tierOf(d.total) + '. See yours:';
+      wireShare(u, text, 'recap');
+      $('s-img').addEventListener('click', function () { saveImage(u, d); ev('save_image', { n: bucket(d.total) }); });
+      wireBridge();
+    }
+    try { var c = JSON.parse(sessionStorage.getItem(key) || 'null'); if (c && Date.now() - c.at < 900000) d = c.d; } catch (e) { d = null; }
+    var P = null;
+    try {
+      P = (B.pass && same(B.pass.login, u)) ? B.pass : await fetch('/api/pass/' + encodeURIComponent(u)).then(function (r) { return r.ok ? r.json() : null; });
+    } catch (e) { P = null; }
+    if (my !== RUN) return;
+    if (P && !P.login) P = null;
+    if (P && P.verified_at && typeof P.total === 'number') {
+      d = { total: P.total, merged: P.merged || 0, abroad: P.abroad, top: P.top, first: P.first, fam: P.fam || [] };
+      $('p-claimed').hidden = false;
+      $('p-kicker').textContent = 'Agent recap ' + YEAR + ' · claimed · counted with their own sign-in on ' + new Date(P.verified_at * 1000).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+    }
+    passExtras(u, P, my);
+    try {
+      if (!d) {
+        var base = 'is:pr author:' + u + ' created:>=' + YEAR + '-01-01 ' + SIG;
+        var j = await gh(base, { n: 30, sort: 'created', order: 'desc' }, my);
+        d = { total: j.total_count || 0, merged: 0, abroad: null, top: '', first: '', fam: [] };
+        setText('p-n', fmt(d.total));
+        if (!d.total) {
+          res.innerHTML = '<div class="res-msg"><b>No agent pull requests found for @' + esc(u) + ' in ' + YEAR + '.</b><p>We looked for public pull requests by @' + esc(u) + ' signed by Claude Code, Codex or Cursor. Work in private repositories doesn’t show, and neither does work an agent opened under its own bot account. Looking for an organization? Try owner/repo.</p></div>' + bridgeHtml();
+          wireBridge();
+          ev('recap_done', { n: '0' });
+          return;
+        }
+        var cnt = {};
+        (j.items || []).forEach(function (it) { var r = String(it.repository_url || '').split('/repos/')[1]; if (r) cnt[r] = (cnt[r] || 0) + 1; });
+        d.top = Object.keys(cnt).sort(function (p, q) { return cnt[q] - cnt[p]; })[0] || '';
+        setText('p-top', d.top || 'n/a');
+        setText('p-class', tierOf(d.total));
+        d.merged = (await gh(base + ' is:merged', null, my)).total_count || 0;
+        setText('p-m', fmt(d.merged) + ' · ' + pct(d.merged, d.total));
+        ready();
+        fetch('/api/count', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ k: 'recap' }) }).catch(function () {});
+        ev('recap_done', { n: bucket(d.total), tier: tierOf(d.total) });
+        // Everything below is extra. It loads slowly and quietly, because GitHub pushes back on fast bursts.
+        d.abroad = (await gh(base + ' -user:' + u, { quiet: true, gap: 1700 }, my)).total_count || 0;
+        setText('p-o', fmt(d.abroad));
+        var f = await gh(base, { n: 1, sort: 'created', order: 'asc', quiet: true, gap: 1700 }, my);
+        var it = (f.items || [])[0];
+        if (it) d.first = String(it.created_at || '').slice(0, 10) + ' · ' + (String(it.repository_url || '').split('/repos/')[1] || '');
+        setText('p-first', d.first || 'n/a');
+        var names = ['claude', 'codex', 'cursor'];
+        for (var i = 0; i < names.length; i++) {
+          var n = (await gh('is:pr author:' + u + ' created:>=' + YEAR + '-01-01 ' + FAM[names[i]], { quiet: true, gap: 2600 }, my)).total_count || 0;
+          d.fam.push({ name: AG[names[i]], n: n });
+          $('p-bars').innerHTML = barsHtml(d.fam);
+          growBars($('p-bars'));
+        }
+        try { sessionStorage.setItem(key, JSON.stringify({ at: Date.now(), d: d })); } catch (e) { /* private mode */ }
+      }
+      if (my !== RUN) return;
+      fillPass(u, d);
+      status('');
+      ready();
+    } catch (e) { fail(e, '@' + u); }
+  }
+  function wireBridge() {
+    Array.prototype.forEach.call(document.querySelectorAll('.bridge a'), function (a) {
+      a.addEventListener('click', function () { ev('bridge_click', { to: a.getAttribute('data-b') }); });
+    });
+  }
+
+  // ------------------------------------------------------------ report for a repository
+  function reportHtml(R) {
+    return '<p class="res-kicker">Gate report · last 30 days · counted live from GitHub</p>'
+      + '<article class="report"><div class="rh"><b>' + esc(R) + '</b><span>Agent arrivals</span></div>'
+      + '<p class="lead">AI agents opened</p><p class="n wait" id="r-n">…</p><p class="sub" id="r-sub">pull requests here in the last 30 days.</p>'
+      + '<div class="rgrid"><div class="landed"><small>Landed · merged</small><b id="r-m" class="wait">…</b></div><div class="turned"><small>Turned back · closed, not merged</small><b id="r-t" class="wait">…</b></div><div><small>Still open</small><b id="r-o" class="wait">…</b></div></div>'
+      + '<div class="bars" id="r-bars"></div><p class="res-note" id="r-out"></p><ul class="files" id="r-files"></ul></article>'
+      + '<p class="res-note" id="p-status"></p>'
+      + actionsHtml('<a class="btn" href="#rules" id="s-rules">Maintainer? Tell agents your rules</a>')
+      + '<p class="res-note">Public pull requests opened on ' + esc(R) + ' in the last 30 days that carry an agent’s signature. Agent work without a signature is not counted.</p>';
+  }
+  async function runRepo(o, r, fromForm) {
+    var my = ++RUN;
+    var R = o + '/' + r;
+    var res = $('result');
+    res.hidden = false;
+    res.innerHTML = reportHtml(R);
+    document.title = 'AI agent pull requests on ' + R + ', last 30 days · Agent Arrivals';
+    if (fromForm) window.scrollTo({ top: 0, behavior: RM ? 'auto' : 'smooth' });
+    var since = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+    try {
+      var base = 'is:pr repo:' + R + ' created:>=' + since + ' ' + SIG;
+      var j = await gh(base, { n: 30, sort: 'created', order: 'desc' }, my);
+      var total = j.total_count || 0;
+      setText('r-n', fmt(total));
+      var merged = 0, turned = 0;
+      if (total) {
+        merged = (await gh(base + ' is:merged', null, my)).total_count || 0;
+        setText('r-m', fmt(merged));
+        turned = (await gh(base + ' is:closed is:unmerged', null, my)).total_count || 0;
+        setText('r-t', fmt(turned));
+        setText('r-o', fmt(Math.max(0, total - merged - turned)));
+      } else {
+        setText('r-m', '0'); setText('r-t', '0'); setText('r-o', '0');
+      }
+      var items = j.items || [], out = 0;
+      items.forEach(function (it) { if (['OWNER', 'MEMBER', 'COLLABORATOR'].indexOf(it.author_association) < 0) out++; });
+      if (items.length >= 5) $('r-out').textContent = 'Of the latest ' + items.length + ', ' + out + ' came from outside the team (not an owner, member or collaborator).';
+      status('');
+      var files = [['AGENTS.md', 'AGENTS.md'], ['CLAUDE.md', 'CLAUDE.md'], ['TOKENFUND.md', 'Listed for agent help (TOKENFUND.md)']];
+      Promise.all(files.map(function (f) {
+        return fetch('https://raw.githubusercontent.com/' + R + '/HEAD/' + f[0]).then(function (x) { return x.ok; }, function () { return null; });
+      })).then(function (ok) {
+        if (my !== RUN || !$('r-files')) return;
+        $('r-files').innerHTML = files.map(function (f, i) {
+          if (ok[i] === null) return '';
+          return '<li class="' + (ok[i] ? 'yes' : 'no') + '">' + (ok[i] ? '✓ ' : '✗ ') + esc(f[1]) + (ok[i] ? '' : ': not found') + '</li>';
+        }).join('');
+      });
+      var text = 'AI agents opened ' + fmt(total) + ' pull requests on ' + R + ' in the last 30 days: ' + fmt(merged) + ' merged, ' + fmt(turned) + ' turned back.';
+      wireShare(R, text, 'repo');
+      $('s-rules').addEventListener('click', function () { ev('rules_click', { from: 'report' }); });
+      fetch('/api/count', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ k: 'repo' }) }).catch(function () {});
+      ev('repo_done', { n: bucket(total) });
+      // The share of all pull requests and the split by agent come last and slowly: GitHub pushes back on fast bursts.
+      var all = (await gh('is:pr repo:' + R + ' created:>=' + since, { quiet: true, gap: 1700 }, my)).total_count || 0;
+      if (all && $('r-sub')) $('r-sub').textContent = 'pull requests here in the last 30 days: ' + pct(total, all) + ' of all ' + fmt(all) + ' opened.';
+      if (total) {
+        var fam = [], names = ['claude', 'codex', 'cursor', 'copilot'];
+        for (var i = 0; i < names.length; i++) {
+          var n = (await gh('is:pr repo:' + R + ' created:>=' + since + ' ' + FAM[names[i]], { quiet: true, gap: 2600 }, my)).total_count || 0;
+          fam.push({ name: AG[names[i]], n: n });
+          if (!$('r-bars')) return;
+          $('r-bars').innerHTML = barsHtml(fam);
+          growBars($('r-bars'));
+        }
+      }
+    } catch (e) { fail(e, R); }
+  }
+
+  // ------------------------------------------------------------ boarding pass as an image
+  function saveImage(u, d) {
+    var c = document.createElement('canvas');
+    c.width = 1200; c.height = 630;
+    var x = c.getContext('2d');
+    var MONO = 'ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace';
+    function rr(px, py, w, h, r, fill) { x.beginPath(); x.moveTo(px + r, py); x.arcTo(px + w, py, px + w, py + h, r); x.arcTo(px + w, py + h, px, py + h, r); x.arcTo(px, py + h, px, py, r); x.arcTo(px, py, px + w, py, r); x.closePath(); x.fillStyle = fill; x.fill(); }
+    function t(s, px, py, font, fill, sp, maxW) {
+      x.font = font; x.fillStyle = fill;
+      try { x.letterSpacing = (sp || 0) + 'px'; } catch (e) { /* older browsers */ }
+      if (maxW) { while (s.length > 4 && x.measureText(s).width > maxW) s = s.slice(0, -2); }
+      x.fillText(s, px, py);
+    }
+    x.fillStyle = '#0b0b0c'; x.fillRect(0, 0, 1200, 630);
+    rr(50, 50, 1100, 530, 26, '#f4f0e6');
+    x.strokeStyle = '#b9b3a4'; x.lineWidth = 3; x.setLineDash([10, 8]); x.beginPath(); x.moveTo(860, 64); x.lineTo(860, 566); x.stroke(); x.setLineDash([]);
+    x.fillStyle = '#0b0b0c'; x.beginPath(); x.arc(860, 50, 16, 0, Math.PI * 2); x.fill(); x.beginPath(); x.arc(860, 580, 16, 0, Math.PI * 2); x.fill();
+    var ink = '#141414', mute = '#6b665b';
+    t('AGENT RECAP ' + YEAR, 92, 112, '700 20px ' + MONO, ink, 3);
+    t('BOARDING PASS', 630, 112, '700 20px ' + MONO, ink, 3);
+    x.fillStyle = ink; x.fillRect(92, 128, 736, 3);
+    t('PASSENGER', 92, 172, '600 15px ' + MONO, mute, 2);
+    t('@' + u, 92, 208, '700 34px ' + MONO, ink, 0, 730);
+    t('FLIGHTS · PULL REQUESTS OPENED BY AI AGENTS IN ' + YEAR, 92, 262, '600 15px ' + MONO, mute, 2);
+    t(fmt(d.total), 88, 372, '700 124px ' + MONO, ink, -3, 740);
+    t('LANDED · MERGED', 92, 432, '600 15px ' + MONO, mute, 2);
+    t(fmt(d.merged) + ' · ' + pct(d.merged, d.total), 92, 466, '700 28px ' + MONO, ink, 0);
+    t('ABROAD', 470, 432, '600 15px ' + MONO, mute, 2);
+    t(d.abroad === null ? '…' : fmt(d.abroad), 470, 466, '700 28px ' + MONO, ink, 0);
+    t('TOP DESTINATION', 92, 516, '600 15px ' + MONO, mute, 2);
+    t(d.top || 'n/a', 92, 548, '700 22px ' + MONO, ink, 0, 730);
+    t('CLASS', 894, 112, '600 15px ' + MONO, mute, 2);
+    var cls = tierOf(d.total).split(' ');
+    var line = '', y = 152;
+    cls.forEach(function (w) {
+      var probe = line ? line + ' ' + w : w;
+      x.font = '700 30px ' + MONO;
+      if (line && x.measureText(probe).width > 220) { t(line, 894, y, '700 30px ' + MONO, ink, 0); y += 38; line = w; } else line = probe;
+    });
+    if (line) t(line, 894, y, '700 30px ' + MONO, ink, 0);
+    var bx = 894, seed = u.toLowerCase();
+    for (var i = 0; i < 44 && bx < 1108; i++) {
+      var w = 2 + ((seed.charCodeAt(i % seed.length) * (i + 3)) % 5);
+      x.fillStyle = ink; x.fillRect(bx, 400, w, 96);
+      bx += w + 3 + (i % 5 === 4 ? 3 : 0);
+    }
+    t('agents.myclawn.com/' + u, 894, 532, '600 14px ' + MONO, mute, 0, 216);
+    c.toBlob(function (blob) {
+      if (!blob) return;
+      var a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'agent-recap-' + YEAR + '-' + u + '.png';
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      setTimeout(function () { URL.revokeObjectURL(a.href); }, 4000);
+    }, 'image/png');
+  }
+
+  // ------------------------------------------------------------ routing and the lookup form
+  function parseQ(v) {
+    v = String(v || '').trim().replace(/^https?:\/\/(www\.)?github\.com\//i, '').replace(/^github\.com\//i, '').replace(/^@/, '').replace(/[?#].*$/, '').replace(/\/+$/, '');
+    var p = v.split('/').filter(Boolean);
+    if (p.length === 1 && LOGIN.test(p[0])) return { kind: 'user', a: p[0] };
+    if (p.length >= 2 && LOGIN.test(p[0])) {
+      var repo = p[1].replace(/\.git$/, '');
+      if (REPO.test(repo)) return { kind: 'repo', a: p[0], b: repo };
+    }
+    return null;
+  }
+  function go(t, fromForm) {
+    if (!$('result')) { if (t) location.href = '/' + t.a + (t.kind === 'repo' ? '/' + t.b : ''); return; }
+    if (!t) { RUN++; $('result').hidden = true; $('result').innerHTML = ''; return; }
+    if (t.kind === 'user') runUser(t.a, fromForm); else runRepo(t.a, t.b, fromForm);
+  }
+  function fromPath() {
+    var p = location.pathname.replace(/^\/+|\/+$/g, '');
+    return p ? parseQ(p) : null;
+  }
+  if ($('look')) $('look').addEventListener('submit', function (e) {
+    e.preventDefault();
+    var t = parseQ($('q').value);
+    var input = $('q');
+    if (!t) { input.setCustomValidity('Type a GitHub username, or owner/repo.'); input.reportValidity(); return; }
+    input.setCustomValidity('');
+    var path = '/' + t.a + (t.kind === 'repo' ? '/' + t.b : '');
+    if (!$('result')) { location.href = path; return; }
+    try { history.pushState({}, '', path); } catch (err) { location.href = path; return; }
+    ev('lookup', { kind: t.kind });
+    go(t, true);
+  });
+  if ($('q')) $('q').addEventListener('input', function () { this.setCustomValidity(''); });
+  window.addEventListener('popstate', function () { if ($('result')) go(fromPath(), false); });
+
+  // ------------------------------------------------------------ departures, network line, copy buttons
+  function loadDepartures() {
+    if (!$('deps')) return;
+    fetch('/api/departures').then(function (r) { return r.ok ? r.json() : []; }).then(function (list) {
+      var box = $('deps');
+      if (!list || !list.length) { box.innerHTML = '<p class="fine">The list did not load. It lives at <a href="https://fund.myclawn.com/?utm_source=agents&utm_medium=departures">fund.myclawn.com</a>.</p>'; return; }
+      box.innerHTML = list.map(function (p) {
+        return '<a class="dep" target="_blank" rel="noopener" href="https://fund.myclawn.com/p/' + encodeURIComponent(p.slug) + '?utm_source=agents&utm_medium=departures"><span class="gate">' + esc(p.owner + '/' + p.repo) + '</span><b>' + esc(p.title) + '</b><p>' + esc(p.vision) + '</p><span class="go">Give usage →</span></a>';
+      }).join('');
+      var ours = list.every(function (p) { return p.owner === '20vision'; });
+      $('depsnote').innerHTML = 'From MyClawn Fund: ' + list.length + ' project' + (list.length === 1 ? '' : 's') + ' so far' + (ours ? ', all ours. The Fund is new.' : '.') + ' <a href="https://fund.myclawn.com/submit?utm_source=agents&utm_medium=departures">List yours with one file</a>.';
+      Array.prototype.forEach.call(box.querySelectorAll('a'), function (a) { a.addEventListener('click', function () { ev('fund_click', { from: 'departures' }); }); });
+    }).catch(function () {});
+  }
+  function loadNet() {
+    if (!$('netline')) return;
+    fetch('/api/net').then(function (r) { return r.ok ? r.json() : null; }).then(function (s) {
+      if (!s || typeof s.agents !== 'number') return;
+      $('netline').textContent = fmt(s.agents) + (s.agents === 1 ? ' agent has' : ' agents have') + ' an address so far. The network is new.';
+    }).catch(function () {});
+  }
+  if ($('copycmd')) $('copycmd').addEventListener('click', function () { copy($('cmd').textContent, this, 'Copy'); ev('address_copy', {}); });
+
+  // ------------------------------------------------------------ rules generator
+  function rulesText() {
+    var stance = (document.querySelector('input[name=stance]:checked') || {}).value || 'label';
+    var label = ($('g-label').value || 'agents-welcome').replace(/[`\n\r]/g, '').trim() || 'agents-welcome';
+    var test = ($('g-test').value || '').replace(/[`\n\r]/g, '').trim();
+    $('gen-label').hidden = stance !== 'label';
+    if (stance === 'closed') {
+      return '## AI agents: do not open pull requests here\n\n'
+        + '- This project does not accept pull requests written by AI agents.\n'
+        + '- If you are an agent working for someone: stop, and tell them. They can open an issue that describes the problem instead.\n'
+        + '- Agent-written pull requests are closed without review.\n';
+    }
+    var lines = ['## AI agents: read this before you open a pull request', ''];
+    if (stance === 'label') lines.push('- Agent pull requests are welcome only on issues labelled `' + label + '`. For anything else, comment on the issue and wait for a maintainer to say yes.');
+    else lines.push('- Do not open a pull request until a maintainer has said yes on the issue. Comment there first and say what you plan to change.');
+    if ($('g-one').checked) lines.push('- One open pull request per person at a time.');
+    if ($('g-disclose').checked) lines.push('- Say in the pull request which agent and model wrote it.');
+    if ($('g-human').checked) lines.push('- A person must have read the whole diff before it is opened, and answers review comments themselves.');
+    if (test) lines.push('- Run `' + test + '` and paste the result into the pull request.');
+    lines.push('- Keep the change to the issue: no drive-by refactors, no reformatting.');
+    lines.push('- Pull requests that skip these rules are closed without review.');
+    return lines.join('\n') + '\n';
+  }
+  function renderRules() { if ($('genout')) $('genout').textContent = rulesText(); }
+  if ($('gen')) $('gen').addEventListener('input', renderRules);
+  if ($('gen')) $('gen').addEventListener('submit', function (e) { e.preventDefault(); });
+  if ($('gencopy')) $('gencopy').addEventListener('click', function () {
+    copy(rulesText(), this, 'Copy');
+    ev('rules_copy', { stance: (document.querySelector('input[name=stance]:checked') || {}).value || '' });
+  });
+
+  // ------------------------------------------------------------ start
+  renderTide();
+  setTape(tide.tape);
+  renderRules();
+  loadDepartures();
+  loadNet();
+  loadFlyers();
+  loadLounge();
+  setInterval(poll, 60000);
+  if (B.kind === 'user' && B.a) runUser(B.a, false);
+  else if (B.kind === 'repo' && B.a && B.b) runRepo(B.a, B.b, false);
+})();

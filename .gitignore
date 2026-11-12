@@ -1,0 +1,8 @@
+node_modules/
+.wrangler/
+.dev.vars
+collector/state.json
+collector/snapshot.json
+collector/logs/
+collector/loop.json
+collector/.lock

@@ -1,0 +1,12 @@
+name = "myclawn-agents"
+main = "src/worker.js"
+compatibility_date = "2026-10-01"
+routes = [{ pattern = "agents.myclawn.com", custom_domain = true }]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "myclawn-agents"
+database_id = "c4a24401-28c7-4135-95d5-12c810696aa5"
+
+[vars]
+GH_CLIENT_ID = "Ov23liF0jAEf41deiOVK"
